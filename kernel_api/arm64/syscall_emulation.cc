@@ -22,12 +22,15 @@
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
+#include <sys/uio.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <time.h>
 
 #include <cerrno>
 #include <cstring>
+#include <vector>
 
 #include "berberis/base/macros.h"
 #include "berberis/base/scoped_errno.h"
@@ -332,6 +335,60 @@ void RunGuestSyscall(ThreadState* state) {
   long syscall_arg1 = state->cpu.x[0];
   long syscall_arg3 = state->cpu.x[2];
   long syscall_arg4 = state->cpu.x[3];
+
+  // futex_waitv contains guest pointers inside the userspace waiter array.
+  // Mask both the array pointer and every embedded uaddr before handing it to
+  // the x86_64 host kernel. The guest structure is input-only, so a temporary
+  // host copy is safe and avoids mutating guest memory.
+  if (guest_nr == kGuestNrFutexWaitv) {
+    constexpr uint32_t kMaxFutexWaitV = 128;
+    uint32_t count = static_cast<uint32_t>(state->cpu.x[1]);
+    if (count == 0 || count > kMaxFutexWaitV) {
+      state->cpu.x[0] = static_cast<uint64_t>(-EINVAL);
+      if (kInstrumentSyscalls) {
+        OnSyscallReturn(state, guest_nr);
+      }
+      return;
+    }
+
+    const GuestAddr guest_waiters = static_cast<GuestAddr>(
+        static_cast<uint64_t>(state->cpu.x[0]) & kGuestTbiAddressMask);
+    std::vector<struct futex_waitv> waiters(count);
+    struct iovec local_iov {
+      .iov_base = waiters.data(),
+      .iov_len = waiters.size() * sizeof(waiters[0]),
+    };
+    struct iovec remote_iov {
+      .iov_base = reinterpret_cast<void*>(guest_waiters),
+      .iov_len = waiters.size() * sizeof(waiters[0]),
+    };
+    ssize_t copied = process_vm_readv(getpid(), &local_iov, 1, &remote_iov, 1, 0);
+    if (copied != static_cast<ssize_t>(remote_iov.iov_len)) {
+      state->cpu.x[0] = static_cast<uint64_t>(-EFAULT);
+      if (kInstrumentSyscalls) {
+        OnSyscallReturn(state, guest_nr);
+      }
+      return;
+    }
+
+    for (auto& waiter : waiters) {
+      waiter.uaddr = static_cast<__u64>(
+          static_cast<uint64_t>(waiter.uaddr) & kGuestTbiAddressMask);
+    }
+
+    long timeout = ApplyGuestTbi(state->cpu.x[3]);
+    long result = syscall(449,
+                          waiters.data(),
+                          count,
+                          state->cpu.x[2],
+                          timeout,
+                          state->cpu.x[4]);
+    state->cpu.x[0] = result == -1 ? -errno : result;
+    if (kInstrumentSyscalls) {
+      OnSyscallReturn(state, guest_nr);
+    }
+    return;
+  }
 
   if (guest_nr == kGuestNrFutex) {
     const int futex_op = static_cast<int>(state->cpu.x[1]) & FUTEX_CMD_MASK;
