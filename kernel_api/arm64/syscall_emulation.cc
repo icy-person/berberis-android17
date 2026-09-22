@@ -59,6 +59,29 @@ constexpr long kGuestNrClockGettime = 113;   // asm-generic __NR_clock_gettime
 constexpr long kGuestNrUname = 160;          // asm-generic __NR_uname
 constexpr long kGuestNrGettimeofday = 169;   // asm-generic __NR_gettimeofday
 constexpr long kGuestNrSeccomp = 277;        // asm-generic __NR_seccomp
+constexpr long kGuestNrFutexWaitv = 449;      // __NR_futex_waitv (asm-generic)
+
+constexpr uint64_t kGuestTbiAddressMask = 0x00ff'ffff'ffff'ffffULL;
+
+inline long ApplyGuestTbi(long addr) {
+  return static_cast<long>(static_cast<uint64_t>(addr) & kGuestTbiAddressMask);
+}
+
+bool FutexArg3IsPointer(int futex_op) {
+  switch (futex_op) {
+    case FUTEX_WAIT:
+    case FUTEX_WAIT_BITSET:
+    case FUTEX_LOCK_PI:
+    case FUTEX_LOCK_PI2:
+    case FUTEX_WAIT_REQUEUE_PI:
+    case FUTEX_CMP_REQUEUE:
+    case FUTEX_REQUEUE:
+    case FUTEX_WAKE_OP:
+      return true;
+    default:
+      return false;
+  }
+}
 
 int FstatatForGuest(int dirfd, const char* path, struct stat* buf, int flags) {
   const char* real_path = nullptr;
@@ -306,31 +329,42 @@ void RunGuestSyscall(ThreadState* state) {
   // value match the actual 32-bit word but the upper 16 bits differ (expected has
   // upper=0, actual has upper=garbage), substitute the actual value so the kernel
   // comparison succeeds and the thread properly sleeps.
-  long futex_arg3 = state->cpu.x[2];
+  long syscall_arg1 = state->cpu.x[0];
+  long syscall_arg3 = state->cpu.x[2];
+  long syscall_arg4 = state->cpu.x[3];
+
   if (guest_nr == kGuestNrFutex) {
-    long uaddr = state->cpu.x[0];
-    int futex_op = static_cast<int>(state->cpu.x[1]) & FUTEX_CMD_MASK;
-    if ((futex_op == FUTEX_WAIT || futex_op == FUTEX_WAIT_BITSET) && uaddr != 0) {
-      // AArch64 TBI ignores the top byte for guest address translation. Apply the
-      // same rule before dereferencing the guest futex word on the x86_64 host;
-      // otherwise a tagged pointer can fault inside the translator itself.
-      constexpr uint64_t kTbiAddressMask = 0x00ff'ffff'ffff'ffffULL;
-      uintptr_t host_uaddr = static_cast<uintptr_t>(static_cast<uint64_t>(uaddr) & kTbiAddressMask);
-      uint32_t actual = *reinterpret_cast<volatile uint32_t*>(host_uaddr);
-      uint32_t expected = static_cast<uint32_t>(futex_arg3);
+    const int futex_op = static_cast<int>(state->cpu.x[1]) & FUTEX_CMD_MASK;
+
+    // All futex operations take uaddr as argument #1. AArch64 TBI makes the
+    // top byte architecturally ignored; the x86_64 host kernel does not.
+    syscall_arg1 = ApplyGuestTbi(syscall_arg1);
+
+    // Argument #4 is a pointer only for operations where Linux defines it as
+    // timeout/uaddr2. Do not mask it for operations where it is an integer.
+    if (FutexArg3IsPointer(futex_op)) {
+      syscall_arg4 = ApplyGuestTbi(syscall_arg4);
+    }
+
+    // Keep the existing .bss compatibility workaround, but perform its probe
+    // through the TBI-normalized address and pass the adjusted expected value.
+    if ((futex_op == FUTEX_WAIT || futex_op == FUTEX_WAIT_BITSET) && syscall_arg1 != 0) {
+      uint32_t actual = *reinterpret_cast<volatile uint32_t*>(
+          static_cast<uintptr_t>(static_cast<uint64_t>(syscall_arg1)));
+      uint32_t expected = static_cast<uint32_t>(syscall_arg3);
       if (actual != expected &&
           (actual & 0xFFFF) == (expected & 0xFFFF) &&
           (expected >> 16) == 0 && (actual >> 16) != 0) {
-        futex_arg3 = static_cast<long>(static_cast<int32_t>(actual));
+        syscall_arg3 = static_cast<long>(static_cast<int32_t>(actual));
       }
     }
   }
 
   long result = RunGuestSyscallImpl(guest_nr,
-                                    state->cpu.x[0],
+                                    syscall_arg1,
                                     state->cpu.x[1],
-                                    (guest_nr == kGuestNrFutex) ? futex_arg3 : state->cpu.x[2],
-                                    state->cpu.x[3],
+                                    syscall_arg3,
+                                    syscall_arg4,
                                     state->cpu.x[4],
                                     state->cpu.x[5]);
   if (result == -1) {
