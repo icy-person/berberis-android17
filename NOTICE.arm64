@@ -1,0 +1,13 @@
+# ARM64 port attribution
+
+The ARM64 guest → x86_64 host implementation in this repository incorporates work from
+DigitalisX64/platform_frameworks_libs_binary_translation.
+
+Synchronized upstream ref:
+`android-latest-release`
+
+Synchronized upstream commit:
+`9e7f4407e0e32a582fe2a56f87492443ca55d6fa`
+
+The imported source files retain their original copyright and Apache-2.0 license
+headers. This notice is an additional repository-level attribution record.

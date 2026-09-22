@@ -23,7 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <random>
+#include <sys/random.h>
 #include <type_traits>
 
 #include "../faulty_memory_accesses.h"

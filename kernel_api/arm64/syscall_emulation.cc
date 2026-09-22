@@ -311,7 +311,12 @@ void RunGuestSyscall(ThreadState* state) {
     long uaddr = state->cpu.x[0];
     int futex_op = static_cast<int>(state->cpu.x[1]) & FUTEX_CMD_MASK;
     if ((futex_op == FUTEX_WAIT || futex_op == FUTEX_WAIT_BITSET) && uaddr != 0) {
-      uint32_t actual = *reinterpret_cast<volatile uint32_t*>(uaddr);
+      // AArch64 TBI ignores the top byte for guest address translation. Apply the
+      // same rule before dereferencing the guest futex word on the x86_64 host;
+      // otherwise a tagged pointer can fault inside the translator itself.
+      constexpr uint64_t kTbiAddressMask = 0x00ff'ffff'ffff'ffffULL;
+      uintptr_t host_uaddr = static_cast<uintptr_t>(static_cast<uint64_t>(uaddr) & kTbiAddressMask);
+      uint32_t actual = *reinterpret_cast<volatile uint32_t*>(host_uaddr);
       uint32_t expected = static_cast<uint32_t>(futex_arg3);
       if (actual != expected &&
           (actual & 0xFFFF) == (expected & 0xFFFF) &&
