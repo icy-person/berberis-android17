@@ -184,6 +184,55 @@ TEST(FutexTbiTest, TaggedUaddrIsMaskedBeforeHostSyscall) {
   ASSERT_EQ(munmap(page, 4096), 0);
 }
 
+
+TEST(FutexTbiTest, TaggedEmbeddedUaddrIsMaskedInFutexWaitv) {
+  void* page = mmap(nullptr,
+                    4096,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1,
+                    0);
+  ASSERT_NE(page, MAP_FAILED) << "mmap futex page: " << strerror(errno);
+
+  auto* futex_word = reinterpret_cast<volatile uint32_t*>(page);
+  *futex_word = 0;
+
+  struct futex_waitv waiter{};
+  constexpr uint64_t kTag = 0xABULL << 56;
+  waiter.val = 0;
+  waiter.uaddr = reinterpret_cast<uint64_t>(futex_word) | kTag;
+  waiter.flags = 0;
+  waiter.__reserved = 0;
+
+  timespec timeout{0, 0};
+
+  ThreadState state{};
+  GuestThread* guest_thread = GuestThread::CreateForTest(&state);
+  ASSERT_NE(guest_thread, nullptr);
+  state.thread = guest_thread;
+
+  // ARM64 syscall ABI: x0=waiter array, x1=count, x2=flags, x3=timeout,
+  // x4=clockid, x8=syscall number.
+  state.cpu.x[0] = reinterpret_cast<uint64_t>(&waiter) | kTag;
+  state.cpu.x[1] = 1;
+  state.cpu.x[2] = 0;
+  state.cpu.x[3] = reinterpret_cast<uint64_t>(&timeout) | kTag;
+  state.cpu.x[4] = CLOCK_MONOTONIC;
+  state.cpu.x[5] = 0;
+  state.cpu.x[8] = 449;  // arm64 __NR_futex_waitv
+
+  RunGuestSyscall(&state);
+
+  // A zero timeout should reach the host futex_waitv and time out. EFAULT would
+  // indicate that one of the tagged pointers was passed through unnormalized.
+  EXPECT_EQ(static_cast<int64_t>(state.cpu.x[0]), -ETIMEDOUT)
+      << "expected normalized futex_waitv pointers, got errno "
+      << -static_cast<int64_t>(state.cpu.x[0]);
+
+  GuestThread::Destroy(guest_thread);
+  ASSERT_EQ(munmap(page, 4096), 0);
+}
+
 }  // namespace
 
 }  // namespace berberis
