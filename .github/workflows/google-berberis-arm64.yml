@@ -4,7 +4,7 @@ on:
   push:
     branches: [arm64-native-translation-v2]
   pull_request:
-    branches: [arm64-native-translation-v2]
+    branches: [arm64-native-translation-v2, arm64-native-translation]
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
