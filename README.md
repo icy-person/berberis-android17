@@ -1,5 +1,7 @@
 # Berberis
 
+> **ARM64 port:** this fork also provides an AArch64 guest → x86_64 host backend. See [`README.arm64.md`](README.arm64.md) for the ARM64 build, test, and synchronization instructions.
+
 Dynamic binary translator to run Android apps with riscv64 native code on x86_64 devices or emulators.
 
 Supported extensions include Zb* (bit manipulation) and most of Zv (vector). Some less commonly used vector instructions are not yet implemented, but Android CTS and some Android apps run with the current set of implemented instructions.

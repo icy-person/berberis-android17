@@ -1,0 +1,141 @@
+name: ARM64 Native Translation CI
+
+on:
+  push:
+    branches: [arm64-native-translation-v2]
+  pull_request:
+    branches: [arm64-native-translation-v2, arm64-native-translation]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-native-translation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      AOSP_TOP: ${{ github.workspace }}/aosp
+      DIGITALIS_MANIFEST: https://github.com/DigitalisX64/manifest.git
+      DIGITALIS_REF: android-latest-release
+      REPO_JOBS: 2
+      OUT_DIR: ${{ github.workspace }}/aosp/out
+
+    steps:
+      - name: Checkout overlay
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore repo metadata
+        uses: actions/cache@v4
+        with:
+          path: aosp/.repo
+          key: berberis-repo-${{ runner.os }}-digitalis-${{ hashFiles('.github/workflows/google-berberis-arm64.yml') }}
+          restore-keys: |
+            berberis-repo-${{ runner.os }}-digitalis-
+
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: berberis-ccache-${{ runner.os }}-arm64-v2-${{ github.sha }}
+          restore-keys: |
+            berberis-ccache-${{ runner.os }}-arm64-v2-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs rsync python3 curl unzip xz-utils bc bison flex gperf build-essential ninja-build ccache
+          git lfs install --skip-repo
+
+      - name: Initialize Android checkout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$AOSP_TOP" "$RUNNER_TEMP/bin"
+          cd "$AOSP_TOP"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$RUNNER_TEMP/bin/repo"
+          chmod +x "$RUNNER_TEMP/bin/repo"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          repo init -u "$DIGITALIS_MANIFEST" -b "$DIGITALIS_REF" --partial-clone --clone-filter=blob:limit=5M --no-use-superproject
+          git config --global color.ui false
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git://github.com/"
+
+      - name: Sync Android PDK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$AOSP_TOP"
+          repo sync -g pdk -c -j"$REPO_JOBS" --force-sync --fail-fast --no-tags --no-clone-bundle --optimized-fetch --prune
+
+      - name: Overlay ARM64 source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$AOSP_TOP/frameworks/libs/binary_translation"
+          for item in "$GITHUB_WORKSPACE"/*; do
+            base="$(basename "$item")"
+            case "$base" in .git|.github|README.md|ARM64_PORT.md|AGENTS.md) continue;; esac
+            rm -rf "$base"
+            cp -a "$item" "$base"
+          done
+          test -f Android.bp
+          test -d heavy_optimizer/arm64
+          test -f heavy_optimizer/arm64/Android.bp
+
+      - name: Build ARM64 translation and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$AOSP_TOP"
+          export SOONG_CONFIG_berberis_translation_arch=arm64_to_x86_64
+          export TARGET_ARCH=x86_64
+          export TARGET_2ND_ARCH=
+          export USE_CCACHE=1
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache -M 4G
+          ccache -z
+          build/soong/soong_ui.bash --make-mode -j2 libberberis_arm64 libberberis_heavy_optimizer_arm64 berberis_arm64_host_tests
+          test -n "$(find "$OUT_DIR" -type f -name 'libberberis_arm64.so' -print -quit)"
+          test -n "$(find "$OUT_DIR" -type f -name 'berberis_arm64_host_tests' -print -quit)"
+
+      - name: Run ARM64 host tests (required)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$AOSP_TOP"
+          test_bin="$(find "$OUT_DIR/host" -type f -name 'berberis_arm64_host_tests' -print -quit)"
+          test -x "$test_bin"
+          "$test_bin" --gtest_color=no
+
+      - name: Verify host architecture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          so="$(find "$OUT_DIR" -type f -name 'libberberis_arm64.so' -print -quit)"
+          test -n "$so"
+          file "$so"
+          readelf -h "$so" | grep -q 'Machine:.*X86-64'
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-ci-diagnostics
+          path: |
+            ${{ env.OUT_DIR }}/host/linux-x86/nativetest64/berberis_arm64_host_tests/**
+            ${{ env.OUT_DIR }}/host/linux-x86/bin/berberis_arm64_host_tests
+          if-no-files-found: warn
