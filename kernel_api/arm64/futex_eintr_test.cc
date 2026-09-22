@@ -148,6 +148,42 @@ TEST_F(FutexEintrTest, FutexWaitReturnsEintrOnSignal) {
   EXPECT_GE(g_sigusr1_count.load(std::memory_order_relaxed), 1);
 }
 
+
+TEST(FutexTbiTest, TaggedUaddrIsMaskedBeforeHostSyscall) {
+  void* page = mmap(nullptr,
+                    4096,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1,
+                    0);
+  ASSERT_NE(page, MAP_FAILED) << "mmap futex page: " << strerror(errno);
+
+  auto* futex_word = reinterpret_cast<volatile uint32_t*>(page);
+  *futex_word = 0;
+
+  ThreadState state{};
+  GuestThread* guest_thread = GuestThread::CreateForTest(&state);
+  ASSERT_NE(guest_thread, nullptr);
+  state.thread = guest_thread;
+
+  constexpr uint64_t kTag = 0xABULL << 56;
+  state.cpu.x[0] = reinterpret_cast<uint64_t>(futex_word) | kTag;
+  state.cpu.x[1] = FUTEX_WAKE;
+  state.cpu.x[2] = 1;
+  state.cpu.x[3] = 0;
+  state.cpu.x[4] = 0;
+  state.cpu.x[5] = 0;
+  state.cpu.x[8] = kArm64NrFutex;
+
+  RunGuestSyscall(&state);
+
+  EXPECT_EQ(0, static_cast<int64_t>(state.cpu.x[0]))
+      << "tagged futex uaddr was not normalized before the host syscall";
+
+  GuestThread::Destroy(guest_thread);
+  ASSERT_EQ(munmap(page, 4096), 0);
+}
+
 }  // namespace
 
 }  // namespace berberis
