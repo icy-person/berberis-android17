@@ -2,9 +2,9 @@ name: ARM64 Native Translation CI
 
 on:
   push:
-    branches: [arm64-native-translation-v2]
+    branches: [main, arm64-native-translation-v2]
   pull_request:
-    branches: [arm64-native-translation-v2, arm64-native-translation]
+    branches: [main, arm64-native-translation-v2, arm64-native-translation]
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
@@ -102,13 +102,13 @@ jobs:
           set -Eeuo pipefail
           cd "$AOSP_TOP"
           export SOONG_CONFIG_berberis_translation_arch=arm64_to_x86_64
-          export TARGET_ARCH=x86_64
-          export TARGET_2ND_ARCH=
+          source build/envsetup.sh
+          lunch sdk_phone64_x86_64_riscv64-trunk_staging-eng
           export USE_CCACHE=1
           export CCACHE_DIR="$HOME/.cache/ccache"
           ccache -M 4G
           ccache -z
-          build/soong/soong_ui.bash --make-mode -j2 libberberis_arm64 libberberis_heavy_optimizer_arm64 berberis_arm64_host_tests
+          m -j2 libberberis_arm64 libberberis_heavy_optimizer_arm64 berberis_arm64_host_tests
           test -n "$(find "$OUT_DIR" -type f -name 'libberberis_arm64.so' -print -quit)"
           test -n "$(find "$OUT_DIR" -type f -name 'berberis_arm64_host_tests' -print -quit)"
 

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -561,15 +562,21 @@ class Interpreter {
         return 0x410FD034ULL;
       case Decoder::SystemReg::kRndr:
       case Decoder::SystemReg::kRndrrs: {
-        // RNDR / RNDRRS (FEAT_RNG): return a 64-bit random value and report
-        // success. The architecture has these reads update PSTATE.NZCV — all
-        // clear (0b0000) on success, so a host that always has entropy clears
-        // the flags here (clearing C signals "random available" to the common
-        // `mrs Xt, RNDR; b.cc <retry>` idiom). Entropy comes from the host's
-        // /dev/urandom-backed random_device, seeded once per thread.
-        thread_local std::mt19937_64 rng(std::random_device{}());
-        state_->cpu.flags = 0;  // NZCV = 0b0000 (success)
-        return static_cast<Register>(rng());
+        // RNDR / RNDRRS (FEAT_RNG): provide cryptographically strong
+        // host entropy. On success the architectural NZCV value is 0b0000;
+        // on failure Z is set (0b0100). In particular, C is not the
+        // availability indicator.
+        Register value = 0;
+        ssize_t bytes;
+        do {
+          bytes = getrandom(&value, sizeof(value), 0);
+        } while (bytes < 0 && errno == EINTR);
+        if (bytes != static_cast<ssize_t>(sizeof(value))) {
+          state_->cpu.flags = CPUState::kFlagZero;  // NZCV = 0b0100
+          return 0;
+        }
+        state_->cpu.flags = 0;  // NZCV = 0b0000
+        return value;
       }
       case Decoder::SystemReg::kCntfrqEl0:
         // Counter frequency: 19.2 MHz, the de-facto Android generic-timer rate.

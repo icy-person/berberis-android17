@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2026 utzcoz
+# Copyright (C) 2023 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,25 +16,23 @@
 
 include frameworks/libs/binary_translation/berberis_config.mk
 
-PRODUCT_PACKAGES += $(BERBERIS_PRODUCT_PACKAGES_ARM64_TO_X86_64)
+PRODUCT_PACKAGES += $(BERBERIS_PRODUCT_PACKAGES_RISCV64_TO_X86_64)
+
+# ATTENTION: we are overriding
+# PRODUCT_SYSTEM_PROPERTIES += ro.dalvik.vm.native.bridge?=0
+# set by build/make/target/product/runtime_libart.mk
+PRODUCT_SYSTEM_PROPERTIES += \
+    ro.dalvik.vm.native.bridge=libberberis_riscv64.so
 
 PRODUCT_SYSTEM_PROPERTIES += \
-    ro.dalvik.vm.native.bridge=libberberis_arm64.so
-
-PRODUCT_SYSTEM_PROPERTIES += \
-    ro.dalvik.vm.isa.arm64=x86_64 \
+    ro.dalvik.vm.isa.riscv64=x86_64 \
     ro.enable.native.bridge.exec=1
-
-# Skip the translator's per-translation MachineIR validation passes on the
-# shipped image. Host tests keep validation enabled by default.
-PRODUCT_SYSTEM_PROPERTIES += \
-    ro.berberis.flags=disable-ir-check
 
 PRODUCT_SOONG_NAMESPACES += frameworks/libs/native_bridge_support/android_api/libc
 
 PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST += \
-    $(BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64)
+    $(BERBERIS_DISTRIBUTION_ARTIFACTS_RISCV64)
 
 BUILD_BERBERIS := true
-BUILD_BERBERIS_ARM64_TO_X86_64 := true
-$(call soong_config_set,berberis,translation_arch,arm64_to_x86_64)
+BUILD_BERBERIS_RISCV64_TO_X86_64 := true
+$(call soong_config_set,berberis,translation_arch,riscv64_to_x86_64)
